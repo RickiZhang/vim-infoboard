@@ -36,6 +36,9 @@ function! s:GotoWinBuf(winid, bufnr)
     call s:PushCurState()
     call win_gotoid(a:winid)
     execute 'buffer ' . a:bufnr
+    if a:winid == s:infoboard_winid
+        setlocal nonumber
+    endif
 endfunction
 
 " autocmd BufEnter * echom "enter buffer:" . bufnr()
@@ -71,7 +74,7 @@ function! s:UpdateInfoboardBufferline()
             let l:display_name = strpart(l:buffer_name, 0, l:max_other_buffer_width - 1)
         endif
         let l:bufferline .= ' ' . l:display_name . ' '
-        if i != l:buffer_cnt
+        if i != s:infoboard_bufnr_list[len(s:infoboard_bufnr_list) - 1]
             let l:bufferline .= '|'
         endif
     endfor
@@ -100,7 +103,10 @@ function! s:UpdateBufferList()
     " call s:GotoWinBuf(s:infoboard_winid, s:infoboard_cur_bufnr)
     call s:UpdateInfoboardBufferline()
     call setbufline(s:infoboard_cur_bufnr, 1, s:infoboard_tabline)
-    call s:HightLight()
+    " if the infoboard is not opened yet, don't highlight it
+    if s:infoboard_winid != -1
+        call s:HightLight()
+    endif
     " call s:ResumeState()
 endfunction
 
@@ -125,22 +131,18 @@ function! s:CreateInfoboardWindow()
     setlocal bufhidden=hide
     setlocal buftype=nofile
     setlocal nobuflisted
-    setlocal nowrap
+    setlocal wrap
     setlocal noswapfile
     setlocal nospell
     setlocal nolist
     setlocal nocursorline
-    setlocal nocursorcolumn
+    setlocal nofoldenable
     setlocal nonumber
-    setlocal norelativenumber
-    setlocal signcolumn=no
-    setlocal foldcolumn=0
-    setlocal colorcolumn=0
-    
-    " it might be called from ToggleInfoboard, so we need to load all
+    " it might be called from ToggleInfoboard/InfoboardRegister, so we need to load all
     " registered buffer if needed
     for bufnr in s:infoboard_bufnr_list
         noautocmd call win_execute(s:infoboard_winid, 'buffer ' . bufnr)
+        call setbufvar(bufnr, '&number', 0) 
     endfor
     if len(s:infoboard_bufnr_list) != 0
         noautocmd call win_execute(s:infoboard_winid, 'bdelete ' . s:infoboard_default_bufnr)
@@ -151,7 +153,31 @@ function! s:CreateInfoboardWindow()
 endfunction
 
 " Initialize infoboard
-call s:CreateInfoboardWindow()
+" call s:CreateInfoboardWindow()
+
+function! s:InfoboardUnRegister(source_name)
+    if !has_key(s:infoname_to_bufnr_map, a:source_name)
+        return
+    endif
+    let l:bufnr = s:infoname_to_bufnr_map[a:source_name]
+    call remove(s:infoname_to_bufnr_map, a:source_name)
+    let l:idx = index(s:infoboard_bufnr_list, l:bufnr)
+    call remove(s:infoboard_bufnr_list, l:idx)
+    if s:infoboard_winid == -1
+        silent! noautocmd execute 'bdelete ' . l:bufnr 
+        return
+    elseif l:bufnr == s:infoboard_cur_bufnr
+        noautocmd call s:SwitchToNextBuffer()  
+    endif
+    if l:bufnr == s:infoboard_cur_bufnr
+        noautocmd call win_execute(s:infoboard_winid, 'close') 
+        let s:infoboard_winid = -1
+        let s:infoboard_cur_bufnr = -1
+        let s:infoboard_highlight_matchids = []
+    endif
+    silent! noautocmd execute 'bdelete ' . l:bufnr
+    call s:UpdateBufferList()
+endfunction
 
 function! s:InfoboardRegister(source_name)
     " return early if this name has been registered
@@ -160,31 +186,31 @@ function! s:InfoboardRegister(source_name)
         return
     endif
     " create a new buffer for this info source
-    let l:bufnr = bufadd(a:source_name)
-    call bufload(l:bufnr)
+    silent! let l:bufnr = bufadd(a:source_name)
+    silent! call bufload(l:bufnr)
+    call setbufvar(l:bufnr, '&bufhidden', 'hide')
+    call setbufvar(l:bufnr, '&buftype', 'nofile')
+    call setbufvar(l:bufnr, '&swapfile', 0)
+    call setbufvar(l:bufnr, '&buflisted', 0)
+    " record source name and bufnr
     let s:infoname_to_bufnr_map[a:source_name] = l:bufnr
     call add(s:infoboard_bufnr_list, l:bufnr)
-    " set properties for this buffer
-    noautocmd call s:GotoWinBuf(s:infoboard_winid, l:bufnr)
-    setlocal bufhidden=hide
-    setlocal buftype=nofile
-    setlocal noswapfile
-    setlocal wrap
-    setlocal nonumber
-    setlocal norelativenumber
-    setlocal nocursorline
-    setlocal nolist
-    setlocal nofoldenable
-    setlocal nobuflisted
+    let s:infoboard_cur_bufnr = l:bufnr
+    " create infoboard window if needed 
+    if s:infoboard_winid == -1
+        noautocmd call s:CreateInfoboardWindow()
+    else
+        noautocmd call win_execute(s:infoboard_winid, 'buffer ' . l:bufnr)
+        noautocmd call setbufvar(l:bufnr, '&number', 0)
+        noautocmd call s:GotoWinBuf(s:infoboard_winid, l:bufnr)
+        noautocmd call s:UpdateBufferList()
+        noautocmd call s:ResumeState()
+    endif
     " delete the default buffer if needed 
     if s:infoboard_default_bufnr != -1
-        execute 'bdelete ' . s:infoboard_default_bufnr
+        noautocmd call win_execute(s:infoboard_winid, 'bdelete ' . s:infoboard_default_bufnr)
         let s:infoboard_default_bufnr = -1
     endif
-    " update the tabline
-    let s:infoboard_cur_bufnr = l:bufnr
-    noautocmd call s:UpdateBufferList()
-    noautocmd call s:ResumeState()
 endfunction
 
 function! s:InfoboardClear(source_name)
@@ -294,6 +320,10 @@ function! s:CreateInfoboardAgent()
 
     function! l:obj.RegisterInfoSource(source_name) dict
         call s:InfoboardRegister(a:source_name)
+    endfunction
+
+    function! l:obj.UnRegisterInfoSource(source_name) dict
+        call s:InfoboardUnRegister(a:source_name)
     endfunction
 
     function! l:obj.ClearInfoboard(source_name) dict
